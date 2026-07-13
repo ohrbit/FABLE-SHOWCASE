@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tunnel Derby — Renderer (R1 swarm)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060f; color: #cfe9ff; font-family: monospace; }
+  #game { display: block; width: 100vw; height: 100vh; }
+  #status { position: fixed; left: 12px; bottom: 12px; opacity: 0.7; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="status">loading modules…</div>
+
+<!-- SHARED INTERFACE CONTRACT: each module is an ES module, imported directly.
+     tunnel.mjs (tunnel-architect) + ga.mjs (ga-breeder) are on remote branches
+     and merged into main; physics.mjs (flight-physicist) provides
+     decodeGenome/simulate and is loaded lazily so the scaffold runs even before
+     it lands. -->
+<script type="module">
+import { generateTunnel } from './tunnel.mjs';
+import { GENE_COUNT, randomGenome, crossover, mutate, breed } from './ga.mjs';
+import { drawScene } from './render.mjs';
+
+// ---- optional physics module (graceful fallback) ---------------------------
+// Real contract: decodeGenome(g)->Spec ; class Ship ; simulate(ship,tunnel,steps)->{dist,crashed}
+let decodeGenome = null, simulate = null;
+try {
+  const phys = await import('./physics.mjs');
+  decodeGenome = phys.decodeGenome;
+  simulate = phys.simulate;
+  status('physics.mjs loaded');
+} catch (e) {
+  status('physics.mjs absent — using kinematics fallback');
+}
+
+// ---- RNG (mulberry32) ------------------------------------------------------
+function makeRng(seed = 1) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---- config ----------------------------------------------------------------
+const POP = 20;
+const GENS = 40;
+const TUNNEL_LEN = 4000;
+const STEPS_PER_SHIP = 600;
+
+const rng = makeRng(20260613);
+const tunnel = generateTunnel(rng, TUNNEL_LEN);
+const genomes = Array.from({ length: POP }, () => randomGenome(rng));
+
+// ---- kinematics fallback (until physics.mjs provides simulate) -------------
+// A trivial steer-toward-tunnel-centre controller so the renderer has live
+// ships to draw before the real flight model is merged.
+function fallbackSimulate(g, tunnel) {
+  const spec = decodeGenome ? decodeGenome(g) : null;
+  let x = tunnel.sample(0).x, y = tunnel.sample(0).y, theta = 0;
+  let dist = 0, crashed = false;
+  const ds = 6;
+  for (let step = 0; step < STEPS_PER_SHIP && !crashed; step++) {
+    const t = Math.min(tunnel.length, dist + ds);
+    const c = tunnel.sample(t);
+    // steer toward centreline; genes bias turn & throttle (if spec present)
+    const desired = Math.atan2(c.y - y, c.x - x);
+    let turn = ((desired - theta) * 0.15);
+    if (spec && spec.turnGain != null) turn *= spec.turnGain;
+    theta += turn;
+    const vx = Math.cos(theta) * ds, vy = Math.sin(theta) * ds;
+    const nx = x + vx, ny = y + vy;
+    // crash test vs tunnel radius
+    const dx = nx - c.x, dy = ny - c.y;
+    if (Math.hypot(dx, dy) > c.r) { crashed = true; break; }
+    x = nx; y = ny; dist = t;
+  }
+  return { dist, crashed, pos: { x, y }, angle: theta };
+}
+
+// ---- GA run (one generation per frame for a live view) ---------------------
+let generation = 0;
+let bestEver = 0, lastBest = 0;
+const aliveColors = Array.from({ length: POP }, (_, i) => `hsl(${(i * 53) % 360} 80% 60%)`);
+
+function step() {
+  // evaluate current genomes
+  const results = genomes.map((g, i) => {
+    const r = simulate ? simulate({ genome: g }, tunnel, STEPS_PER_SHIP)
+                       : fallbackSimulate(g, tunnel);
+    return { g, dist: r.dist, crashed: r.crashed, pos: r.pos || { x: 0, y: 0 }, angle: r.angle || 0, color: aliveColors[i] };
+  });
+  results.sort((a, b) => b.dist - a.dist);
+  const best = results[0]?.dist ?? 0;
+  bestEver = Math.max(bestEver, best);
+  const reachedHalf = results.filter(r => r.dist >= tunnel.length * 0.5).length;
+  const survival = reachedHalf / POP;
+  const convergence = generation > 0 ? best - lastBest : 0;
+  lastBest = best;
+
+  // render: draw live ships (use best-followed lead via drawScene)
+  drawScene(ctx, results.map(r => ({
+    pos: r.pos, angle: r.angle, color: r.color,
+    crashed: r.crashed, id: 0,
+  })), tunnel, {
+    generation, best: bestEver, alive: POP - results.filter(r => r.crashed).length,
+    total: POP, survival, convergence, fps, status: simStatus,
+  });
+
+  // breed next generation — breed() takes [{genome, fitness}] and returns genomes
+  const ranked = results.map(r => ({ genome: r.g, fitness: r.dist }));
+  const next = breed(ranked);
+  for (let i = 0; i < POP; i++) genomes[i] = next[i] || randomGenome(rng);
+  generation++;
+
+  if (generation >= GENS) { simStatus = `done — best ${Math.round(bestEver)} / ${tunnel.length}`; generation = 0; }
+}
+
+// ---- canvas + loop ---------------------------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+let fps = 60, last = performance.now(), simStatus = 'running';
+function frame(now) {
+  fps = 1000 / Math.max(1, now - last); last = now;
+  step();
+  requestAnimationFrame(frame);
+}
+function status(t) { document.getElementById('status').textContent = t; simStatus = t; }
+status(simulate ? 'physics loaded' : 'kinematics fallback');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
