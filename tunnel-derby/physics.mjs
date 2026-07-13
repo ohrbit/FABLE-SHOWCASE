@@ -130,6 +130,10 @@ export class Ship {
     this.voff *= DAMP;
     if (!isFinite(this.voff)) this.voff = 0;
     this.off += this.voff * dt;
+    const _limit = (tunnel.sample(this.s).r - SHIP_R);
+    if (!isFinite(_limit)) { this.alive=false; this.crashed=true; return; }
+    if (Math.abs(this.off) > _limit) { this.off = (this.off>=0?1:-1)*_limit; if ((this.off>=0&&this.voff>0)||(this.off<0&&this.voff<0)) this.voff=0; }
+    if (Math.abs(this.off) > _limit*0.85) this.v *= 0.93;  // scrape near wall = speed loss
     if (!isFinite(this.off)) this.off = 0;
 
     // Wall collision via tunnel.sample(progress).
