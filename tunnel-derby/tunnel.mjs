@@ -11,11 +11,12 @@
 // All randomness is drawn from the supplied `rng` (a () => [0,1) function),
 // so the produced tunnel is fully deterministic for a given seed.
 //
-// ROUND-2 TIGHTENING (vs round 1): round 1 chokes bottomed at minR=28 and
-// only dipped partway toward it, so every genome survived (100% survival ->
-// zero selection pressure, GA gain=0). Here choke points are explicit, far
-// narrower (radius 12-20 instead of 28), more numerous, and the centerline
-// bends more sharply, so only well-steered genomes clear them.
+// ROUND-3 LOOSENING (vs round 2): round 2 chokes bottomed at minR=14 which is
+// structurally impassable (ship radius 7 + wall leaves <7 tolerance, every ship
+// crashes at s=240 -> 0% survival). Here the narrowest choke floor is raised to
+// 35-45 (>= ship radius + generous tolerance), the number of chokes is reduced to
+// 6-8 gentle bottlenecks, the nominal baseR is widened to ~120, and the centerline
+// may still bend sharply but the walls stay passable.
 
 // ---- small helpers ----------------------------------------------------------
 
@@ -44,25 +45,25 @@ export function generateTunnel(rng, length = 4000) {
   const n = Math.max(2, Math.round(length / ds));
   const usable = n * ds;               // exact length we actually generate
 
-  const baseR = 95;                   // nominal tunnel half-width (tighter than r1=120)
-  const minR = 14;                    // narrowest a choke may get (r1 was 28)
-  const maxR = 175;                   // widest a bulge may get (r1 was 210)
+  const baseR = 120;                  // nominal tunnel half-width (widened from 95)
+  const minR = 35;                    // narrowest a choke may get (passable: ship r=7 + >=28 tolerance)
+  const maxR = 175;                   // widest a bulge may get
 
   // Pre-roll a few sine phases/amps so the radius varies smoothly along the run.
   const phases = Array.from({ length: 4 }, () => rng() * Math.PI * 2);
   const amps = [0.62, 0.34, 0.20, 0.14];
 
-  // ---- explicit narrow choke points (the selection-pressure engine) ----
+  // ---- explicit gentle choke points (the selection-pressure engine) ----
   // Placed roughly evenly along the run with jitter, snapped to a cross-section
   // so the bottleneck hits full narrowness. Each choke's floor radius is a
-  // random value in [minR, minR+5] -> 14..19, well inside the r1 minimum (28).
-  const N_CHOKES = 14;                // far more chokes than r1 (occasional only)
-  const chokeW = 110;                 // half-width of a choke's influence (arc-length)
+  // random value in [minR, minR+10] -> 35..45, gentle and passable (ship r=7).
+  const N_CHOKES = 7;                 // 6-8 gentle chokes (reduced from 14)
+  const chokeW = 130;                 // half-width of a choke's influence (arc-length)
   const chokeCenters = [];
   for (let k = 1; k <= N_CHOKES; k++) {
     const approx = Math.round((k / (N_CHOKES + 1)) * n);
     const ci = clamp(approx + Math.round((rng() * 2 - 1) * 3), 8, n - 8);
-    chokeCenters.push({ c: ci * ds, floor: minR + rng() * 5 }); // 14..19
+    chokeCenters.push({ c: ci * ds, floor: minR + rng() * 10 }); // 35..45
   }
 
   const pts = [];                     // {x, y, r, theta}
@@ -160,6 +161,19 @@ if (import.meta.url === pathToFileURL(argv[1]).href) {
   console.log('sample(length):', tunnel.sample(tunnel.length));
   console.log('MIN RADIUS:', tunnel.minRadius.toFixed(2));
   console.log('CHOKE COUNT:', tunnel.chokeCount);
+  // passability check (physics contract: ship radius = 7).
+  // A centered ship (lateral offset 0) clears a cross-section iff r(t) >= shipR(7).
+  const SHIP_R = 7;
+  let minRSeen = Infinity;
+  for (let s = 0; s <= tunnel.length; s += 25) {
+    const { r } = tunnel.sample(s);
+    minRSeen = Math.min(minRSeen, r);
+  }
+  const centeredClearance = minRSeen - SHIP_R;     // 35 - 7 = 28
+  const centeredPassable = centeredClearance >= 0; // always true for minR>=7
+  const maxSafeOffset = minRSeen - SHIP_R;          // largest off-center distance that still clears
+  console.log('centered ship (r=7) min clearance:', centeredClearance.toFixed(2), '-> passable:', centeredPassable);
+  console.log('max safe lateral offset:', maxSafeOffset.toFixed(2), '(>=30 bridgeable at 28 margin)');
   // determinism check
   const t2 = generateTunnel(makeRng(12345), 4000);
   const ok = JSON.stringify(tunnel.segments) === JSON.stringify(t2.segments);
