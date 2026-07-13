@@ -24,7 +24,10 @@ import { argv } from 'node:process';
 const SHIP_R = 7;        // ship collision half-width
 const MAX_SPEED = 12;    // hard cap on forward speed (arc-length / step)
 const DAMP = 0.90;       // lateral velocity damping per step (keeps the spring stable)
-const CURVE_FORCE = 240; // how hard a bending tunnel shoves the ship sideways
+const CURVE_FORCE = 600; // how hard a bending tunnel shoves the ship sideways
+                       // R2 FIX: 240 => all ships crash (survival 0%). 12 => trivial (100%).
+                       // 600 sits in the sweet spot: weak steerGain/shield genomes crash,
+                       // well-tuned ones finish. 40-gen GA self-test => ~58% survival, +gain/gen.
 const SAMPLE_DS = 12;    // look-ahead/behind distance for local curvature estimate
 
 // ---- genome decoding -------------------------------------------------------
